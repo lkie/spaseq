@@ -1,0 +1,402 @@
+---
+title: "Reproducible analysis of H-SPA Sequencing Data"
+author:
+- affiliation: Roche Innovation Center Copenhagen A/S
+  name: Łukasz Jan Kiełpiński
+date: '`r Sys.Date() `'
+output:
+  html_document:
+    df_print: kable
+    theme: journal
+    toc: yes
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+---
+This report documents how the H-SPA sequencing data was processed. The workflow starts with pre-processed dataset (directories with counts of kmers generated using bash tools; details below), and using 'spaseq' R package it:  
+
+* Reads-in the pre-processed data into R environment;
+* Detects differential abundunces of kmers within probed constructs;
+* Presents sequence preferences;
+* Shows how the Sequence Preference Models were built and evaluated
+* Reproduces examples from the publication
+
+To dynamically generate the report, the user has to provide:
+
+* pre-processed H-SPA datasets (tree of directories)
+* Text files describing utilized samples
+* Knock-down datasets to compare the sequence preference model with antisense oligonucleotide potency
+* Sequences of human tRNAs
+* Sequence of HIV-1 genome
+
+
+## Read-in H-SPA datasets and perform initial processing [slow]
+### Read-in kmer counts 
+FASTQ files from sequencing were processed with Bash tools (see 'preprocessing_script.txt' in 'extras') and summarized into trees of directories, defined as:
+
+1. Main directory (".") contains subdirectories named with integers corresponding to the index number, e.g. "1"
+2. The first level of subdirectories (e.g. "./1/"), each dir contains files (for each construct) named: "construct_name".txt.gz (files contain one sequenced insert per line) and subdirectories named with integers corresponding to kmer length
+3. The second level of subdirectories (e.g. "./1/1/") contains files named: "position_in_insert"."construct_name".txt.gz. In each file there are two columns, first is count of occurences of the kmer at position "position_in_insert" in the construct and the second is kmer sequence.  
+
+***
+Import the kmer counts from the pre-processed directory structure:
+```{r read_data}
+library(spaseq, quietly = TRUE)
+library(annotate, quietly = TRUE) #It is a bioconductor package required to fetch the HIV-1 sequence
+SequencedKmers <- importKmers(dataDir = "~/hspa1", indices = c(1:11, 13:26), constructs = c("R7", "R4a", "R4b"))
+SequencedKmers2 <- importKmers(dataDir = "~/hspa2", indices = c(1:14), constructs = c("R7_filtered", "R4b"))
+```
+
+### Read-in descriptions of the samples
+See below for examples of the required structure of files
+```{r read_description}
+mySamples <- read.table("~/hspa1/samples.txt", col.names = c("enzyme", "construct", "index", "treated"), stringsAsFactors = FALSE)
+mySamples2 <- read.table("~/hspa2/samples.txt", col.names = c("enzyme", "construct", "index", "treated"), stringsAsFactors = FALSE)
+```
+
+##### Samples included in the first sequencing
+```{r}
+mySamples
+```
+##### Samples included in the second sequencing
+```{r}
+mySamples2
+```
+
+### Calculate abundance changes of each kmer at each position of the constructs
+This is the "heart" of this workflow. The function uses edgeR package (see the documentation of edgeR for the details of the utilized negative binomial model) to perform the differential abundance analysis. For each construct, it compares occurences of kmers of a given length at a given position between controls and treated samples. 
+```{r GetKmerDE}
+kmerDE <- GetKmerDE(all_kmers = SequencedKmers, samples = mySamples)
+kmerDE2 <- GetKmerDE(all_kmers = SequencedKmers2, samples = mySamples2)
+```
+
+## Explore sequence preferences of human and *E. coli* enzymes
+### A first look at the sequence preferences
+#### Plot heatmaps of preferences in different constructs
+Plots below show enrichment/depletion of different nucleotides at different locations of the constructs and the information content.
+Intensity of red indicates how the nucleotide is associated with good cleavability, the intensity of blue - with bad cleavability.
+
+```{r plot heatmaps for the first sequencing}
+for(enzyme in sort(unique(mySamples$enzyme))){
+  for(constr in sort(unique(mySamples$construct))){
+    em <- enrichmentMatrix(DEresults = kmerDE, enzyme_source = enzyme, constr = constr, smallestUnit = 1)
+    ic <- iContent(DEresults = kmerDE, enzyme_source = enzyme, constr = constr)
+    combinedPlot(fc_results = em, i_cont = ic, main = paste(enzyme, constr))
+  }
+}
+```
+
+#### Plot sequence logos of top 1% pentamers
+```{r plot seqLogos for the first sequencing}
+pentamers <- makeAllKmers(5)
+for(enzyme in sort(unique(mySamples$enzyme))){
+  for(constr in sort(unique(mySamples$construct))){
+    pos = switch(constr, 
+                 "R7" = 1,
+                 "R4a" = 7,
+                 "R4b" = 6)
+    seqLogoFromChars(pentamers[order(kmerDE[[enzyme]][[constr]][[5]][[pos]][["logFC"]])[1:floor(4**5/100)]])
+    grid::grid.text(label = paste(enzyme, constr, pos), x = 0.5, y = 1, just = "top")
+    pos = switch(constr, 
+                 "R7" = 6,
+                 "R4a" = 8,
+                 "R4b" = 11)
+    seqLogoFromChars(pentamers[order(kmerDE[[enzyme]][[constr]][[5]][[pos]][["logFC"]])[1:floor(4**5/100)]])
+    grid::grid.text(label = paste(enzyme, constr, "Starting at", pos), x = 0.5, y = 1, just = "top")
+  }
+}
+```
+
+### Human RNase H1 Sequence Preference Model
+#### Predict results of R4b probing with single nucleotide PWM built on the results of R4a probing
+The first validation of the sequence preference model is, if the method is able to explain the changes of the abundances introduced by the RNase H treatement in one construct using results from another construct. Below we use an example of a centrally positined hexamer from R4a [nucleotides 7-12 of the randomized insert] being used to build a single-nucleotide Sequence Preference Model that would be used to explain R4b [nucleotides 10-15 of the randomized insert].
+
+##### Extract R4a-based PWM
+```{r}
+r4a_pwm <- enrichmentMatrix(DEresults = kmerDE, enzyme_source = "RNASEH1", constr = "R4a", smallestUnit = 1)[,7:12]
+```
+
+##### Predict all the possible hexamers with the R4a-based PWM
+```{r}
+hexamers <- makeAllKmers(6)
+r4a_based_predictions <- predictFC(charVector = hexamers, scores = r4a_pwm)
+```
+
+##### Extract observed changes in counts of hexamers in R4b
+```{r}
+r4b_hexamer_data <- kmerDE[["RNASEH1"]][["R4b"]][[6]][[10]][["logFC"]]
+```
+
+##### Compare observed and predicted
+```{r}
+plotCorrelation(observed = r4b_hexamer_data, predicted = r4a_based_predictions)
+```
+
+#### Predict R4b with dinucleotide-PWM from R4a
+An approach similar to the one described above, but with dinucleotides as "atomic" units:
+```{r}
+r4a_pwm <- enrichmentMatrix(DEresults = kmerDE, enzyme_source = "RNASEH1", constr = "R4a", smallestUnit = 2)[,7:11]
+r4a_based_predictions <- predictFC(charVector = hexamers, scores = r4a_pwm)
+plotCorrelation(observed = r4b_hexamer_data, predicted = r4a_based_predictions)
+```
+  
+Higher correlation indicates that the dinucleotide model explains more of the RNase H1 sequence preferences than a single nt model.
+
+#### Score sequence used in the PDB:2QK9 (Nowotny et al. 2007)
+Catalytic domain of human RNase H1 crystalized on the DNA-RNA duplex was observed bound at the specific site of the RNA-DNA suplex Below we score the RNA sequence used for the crystal and show that the site of crystalization is actually the site predicted to be the most preferentially cleaved.   
+
+##### Read-in the sequence
+```{r}
+RNA_2qk9 <- "AGTGCGACACCTGATTCC"
+cleavageSiteInSequence <- 9 
+```
+
+##### Prepare Sequence Preference Model based on R4b 
+For this analysis we use 10 dinucleotides-wide model, which is a proposed binding range of the RNase H1 to the heteroduplex. 
+
+```{r}
+em_10dinucleotides <- enrichmentMatrix(DEresults = kmerDE, enzyme_source = "RNASEH1", constr = "R4b", smallestUnit = 2)[,6:15]
+cleavageSiteInModel <- 8
+```
+
+##### Score the RNA sequence with this model
+```{r}
+RNA_scores <- scoreSequence(rnaSequence = RNA_2qk9, scores = em_10dinucleotides, cleavageSiteInScores = cleavageSiteInModel)
+```
+
+##### Plot
+```{r}
+suppressPackageStartupMessages(library(ggplot2))
+ggplot(data = data.frame(a = I((1:length(RNA_scores)) -  cleavageSiteInSequence), b = (RNA_scores)), aes(x = a, y = b)) + 
+  geom_bar(stat="identity", fill = "black") +
+  theme(panel.background = element_rect(fill = "transparent"), 
+        axis.text = element_text(size = 15, colour = "black"),
+        axis.title = element_text(size = 15)) + 
+  labs(x = "Offset relative to the observed binding site",
+       y = expression(Predicted~log[2]~FC), colour = "black")
+```
+
+#### Compare Sequence Preference Model with published antisense oligonucleotide induced RNA knockdown results
+For this analysis 8 dinucleotides-wide profile is used, with the terminal nucleotides, due to low information content, being removed.
+
+##### Data from Ionis patent on MAPT knockdown
+```{r}
+suppressPackageStartupMessages(library(Biostrings))
+MAPT <- read.table(system.file("extdata", "MAPT.txt", package="spaseq"), stringsAsFactors = FALSE)
+em_8dinucleotides <- enrichmentMatrix(DEresults = kmerDE, enzyme_source = "RNASEH1", constr = "R4b", smallestUnit = 2)[,7:14]
+predictedAtDifferentLocations_MAPT <- predictWithin(oligoSequences = MAPT$Sequence, scores = em_8dinucleotides, cleavageSiteInScores = 7)
+plotRunningCorrelation(cleavabilityMatrix = predictedAtDifferentLocations_MAPT, observed = 100 - MAPT$Inhibition, conf.level = 0.99)
+```
+
+#### Data from Ionis patent on ANGPTL3 knockdown
+```{r}
+ANGPTL3 <- read.table(system.file("extdata", "ANGPTL3.txt", package="spaseq"), stringsAsFactors = FALSE)
+predictedAtDifferentLocations_ANGPTL3 <- predictWithin(ANGPTL3$Sequence, em_8dinucleotides, cleavageSiteInScores = 7)
+plotRunningCorrelation(cleavabilityMatrix = predictedAtDifferentLocations_ANGPTL3, observed = 100 - ANGPTL3$Inhibition, conf.level = 0.99)
+```
+
+Cleavability scores correlate weakly but significantly with the mRNA target knockdown in the central part of the oligonucleotides but not in flanks.
+
+## Sequence preferences of HIV-1 RNase H
+### A first look at the sequence preferences
+#### Plot heatmaps of preferences in different constructs
+Samples labeled as "RNASEH1_05", "RNASEH1_10" and "RNASEH1_60" were digested with RNase H1 for 5 min, 10 min and 60 min.
+The cleavage extent of the probed libraries, even in the "RNASEH1" sample, was  higher than in the first round of sequencing. This lead to slighlty different sequence preference pattern and to higher information content.  
+Note the very low information content for probing of the R4b construct with HIV-derived enzyme. This is due to very inefficient cleavage of this construct, likely due to having only four ribonucleotides - in consequence, the sequencing results were not used in this study.
+
+```{r}
+for(enzyme in sort(unique(mySamples2$enzyme))){
+  for(constr in sort(unique(mySamples2$construct))){
+    em <- enrichmentMatrix(DEresults = kmerDE2, enzyme_source = enzyme, constr = constr, smallestUnit = 1)
+    ic <- iContent(DEresults = kmerDE2, enzyme_source = enzyme, constr = constr)
+    combinedPlot(fc_results = em, i_cont = ic, main = paste(enzyme, constr))
+  }
+}
+```
+
+#### Plot sequence logos of top 1% pentamers
+```{r}
+for(enzyme in "HIV"){
+  for(constr in "R7_filtered"){
+    pos = switch(constr, 
+                 "R7_filtered" = 1,
+                 "R4b" = 6)
+    seqLogoFromChars(pentamers[order(kmerDE2[[enzyme]][[constr]][[5]][[pos]][["logFC"]])[1:floor(4**5/100)]])
+    grid::grid.text(label = paste(enzyme, constr, pos), x = 0.5, y = 1, just = "top")
+    pos = switch(constr, 
+                 "R7_filtered" = 6,
+                 "R4b" = 11)
+    seqLogoFromChars(pentamers[order(kmerDE2[[enzyme]][[constr]][[5]][[pos]][["logFC"]])[1:floor(4**5/100)]])
+    grid::grid.text(label = paste(enzyme, constr, "Starting at", pos), x = 0.5, y = 1, just = "top")
+  }
+}
+```
+
+#### Compare distribution of fold changes of human and HIV enzymes
+Here I compare distribution of fold changes of the RNA heptamers in the R7 construct after treatment with HIV-1 or with human RNase H1.
+All used samples were sequenced in the same run.
+```{r}
+par(mfrow = c(2,1))
+hist(kmerDE2[["HIV"]][["R7_filtered"]][[7]][[4]][["logFC"]], 
+     breaks = 100, xlab = expression(log[2](FC)), main = "HIV-1 RT-RNase H", 
+     yaxt = "n")
+axis(2, at = seq(0, 1200, 400),las = 1)
+hist(kmerDE2[["RNASEH1_05"]][["R7_filtered"]][[7]][[4]][["logFC"]], 
+     breaks = 100, xlab = expression(log[2](FC)), main = "Human RNase H1", yaxt = "n")
+axis(2, at = seq(0, 1200, 400),las = 1)
+par(mfrow = c(1,1))
+```
+
+### HIV-1 RNase H Sequence Preference Model
+
+Sequence preferences of HIV-1 RNase H cannot be approximated by simple, additive PWM. Below we describe how the HIV-1 RNase H sequence preferences were quantified.
+
+#### Construct a model
+##### Prepare heptamer based predictor which stores information where in each heptamer preferential cleavage occurs and to what extent:
+```{r}
+hbp_hiv <- make_hbp(DEresults = kmerDE2, enzyme_source = "HIV", constr = "R7_filtered")
+```
+
+##### Plot the sequence logos of the best-cleaved heptamers from each cleavage-site class
+```{r}
+cutoff <- 1/4
+heptamers <- makeAllKmers(7)
+local_q1 <- list()
+for(pos in sort(unique(hbp_hiv$where_cut))){
+  local_q1[[pos]] <- quantile(hbp_hiv$logFC_cut[hbp_hiv$where_cut == pos], cutoff)
+}
+
+for(pos in sort(unique(hbp_hiv$where_cut))){
+  seqLogoFromChars(charVector = heptamers[hbp_hiv$logFC_cut < local_q1[[pos]] & hbp_hiv$where_cut == pos])
+  grid::grid.text(label = paste("Cleavage after", pos), x = 0.5, y = 1, just = "top")
+}
+```
+  
+Sequence logos nicely align when offset by the cleavage position. 
+Note that no sequence information was used to split the heptamers into classes (only observation that "GCGCAA" cleaves better/worse at different locations within the construct's insert)
+
+#### Analyze the tRNA primer used by HIV-1
+Almost all lentiviruses use tRNA-Lys3 to prime their reverse transcription. 
+Below we analyze cleavability of this tRNA sequence and its complement (Primer Binding Site) by HIV-1 RNase H. 
+
+##### Assess cleavability of the terminal 18 nt (which perfectly hybridizes to the HIV-1 genome)
+```{r}
+tRNA_primer_sequence <- "GTCCCTGTTCGGGCGCCA"
+plotArea(rnaSequence = tRNA_primer_sequence, 
+            hbp = hbp_hiv, xlab = "", xaxt = "n", xlim = c(0.5,17.5), 
+            yaxt = "n", lwd = 2, bty = "n", main = "tRNA primer cleavage")
+axis(2, at = c(0,-1,-2), las = 1)
+```
+
+##### Assess cleavability of the PBS
+```{r}
+plotArea(rnaSequence = as.character(reverseComplement(DNAString(tRNA_primer_sequence))), 
+            hbp = hbp_hiv, xlab = "", xaxt = "n", xlim = c(0.5,17.5), 
+            yaxt = "n", lwd = 2, bty = "n", main = "PBS cleavage")
+axis(2, at = c(0,-1,-2), las = 1)
+```
+
+##### Calculate scores for all predicted tRNAs
+Sequences of predicted Homo sapiens (GRCh37/hg19) tRNAs  from tRNA-Scan SE 2.0 are downloaded from [http://gtrnadb.ucsc.edu/](http://gtrnadb.ucsc.edu/).  
+We have used 3' most 18 nt plus CCA. This is more than the tRNA-Lys3, which is 15 nt + CCA, 
+but some tRNAs are annotated together with CCA while others don't.
+```{r}
+tRNAs <- readDNAStringSet("http://gtrnadb.ucsc.edu/genomes/eukaryota/Hsapi19/hg19-tRNAs.fa")
+tRNAs <- paste(as.character(unique(subseq(tRNAs, start = width(tRNAs) - 17))), "CCA", sep = "")
+tRNA_complements <- as.character(reverseComplement(DNAStringSet(tRNAs)))
+best_cleavage <- matrix(nrow = length(tRNAs), ncol = 2)
+for(i in 1:length(tRNAs)){
+  best_cleavage[i, 1] <- min(predictCleavages(rnaSequence = tRNAs[i], hbp = hbp_hiv), na.rm = T)
+  best_cleavage[i, 2] <- min(predictCleavages(rnaSequence = tRNA_complements[i], hbp = hbp_hiv), na.rm = T)
+}
+plot(x = best_cleavage[,1], y = best_cleavage[,2], xlab = "", ylab = "", 
+     ylim = range(best_cleavage[,2])*c(1.1,1), xlim = range(best_cleavage[,1])*c(1.1,1))
+mtext(text = expression("Minimal "*log[2](FC)), side = 1, line = 2)
+mtext(text = "(tRNA)", side = 1, line = 3)
+mtext(text = expression("Minimal "*log[2](FC)), side = 2, line = 3)
+mtext(text = "(reverse complement)", side = 2, line = 2)
+#And mark the Lys3 sequence:
+Lys3_tRNA <- which(tRNAs == "CAAGTCCCTGTTCGGGCGCCA")
+points(x = best_cleavage[Lys3_tRNA,1], y = best_cleavage[Lys3_tRNA,2], col= 2, pch= 20)
+text(x = best_cleavage[Lys3_tRNA, 1], y = best_cleavage[Lys3_tRNA, 2], col= 2, labels = "Lys3", pos = 1)
+```
+  
+tRNA_Lys3 uniquely optimizes cleavability of both tRNA and PBS sequences.
+
+#### Analyze HIV-1 genome:
+```{r}
+hiv1_genome <- getSEQ("K03455.1")
+hiv1_scores <- predictCleavages(rnaSequence = hiv1_genome, hbp = hbp_hiv)
+```
+
+##### Plot area of interest: 3' PPT area
+```{r}
+plotArea(CleavageScores = hiv1_scores, rnaSequence = hiv1_genome, startPos = 9040, endPos = 9090)
+```
+
+##### Plot area of interest: Central part of Rev-response element (which is located at 7709 - 8063 nt)
+```{r}
+plotArea(CleavageScores = hiv1_scores, rnaSequence = hiv1_genome, startPos = 7800, endPos = 7950)
+```
+
+##### Compare distribution of distances between well-cleaved sites (gaps) in HIV-1 genome with randomly sampled genomes:
+###### Calculate gap lengths in HIV-1 genome
+Calculate distances between 10% best cleavable bonds.
+```{r}
+localScores <- predictCleavages(rnaSequence = as.character(hiv1_genome), hbp = hbp_hiv)
+localScores[is.na(localScores)] <- max(localScores, na.rm = T)
+hiv_distances <- diff(which(localScores < quantile(localScores, 0.1)))
+```
+
+###### Sample the HIV-1 genome 
+HIV-1 genome sequence was sampled while statistically preserving local dinucleotide content. During sampling, new nucleotide is randomly added in such a way that the probability of forming given dinucleotide is proportional to the number of this dinucleotide in a local window (in the example below, in a window +/- 32 nt). After generation of the sampled genome, sequence is scored for the cleavability by HIV-RNase H and the distances between well cleaved sites are saved.  
+Sampling with 1000 iterations takes ~ 13 min on my laptop.
+
+```{r}
+samplingIterations <- 1000
+sampled_distances <- vector(mode = "list", length = samplingIterations)
+for(i in 1:samplingIterations){
+  localScores <- predictCleavages(localDinucleotideSampling(as.character(hiv1_genome), 65), hbp = hbp_hiv)
+  localScores[is.na(localScores)] <- max(localScores, na.rm = T)
+  sampled_distances[[i]] <- diff(which(localScores < quantile(localScores, 0.1)))
+}
+```
+
+Below, distances between well cleaved sites are summarized into intervals. Lengths of the intervals were chosen according to:
+
+1. It was fixed that 13-19 nt is a bin of the main interes, as this length was reported to be associated with the 5' RNA-end mediated RNase H cleavage (Champoux and Schultz 2009).
+2. Gaps of length 1 (which means that the well cleavaed sites are neighboring) were excluded.
+2. Other bins were put before and after the bin from point 1 and exact boundaries were optimized to have similar count of events as the bin from point 1. 
+
+```{r}
+counts_in_bins <- summarizeBins(referenceSet = hiv_distances, sampledList = sampled_distances, interval_starts = c(2, 5, 9, 13, 20, 31), interval_stops = c(4, 8, 12, 19, 30, max(unlist(sampled_distances))))
+```
+
+
+
+###### Comparing actual genome with sampled genome
+```{r Violin Plot}
+makeViolinPlot(countsInBinsList = counts_in_bins)
+```
+
+## Supplementary
+### Clustering of enzymes based on the dinucleotides from R7 data
+```{r}
+h <- enrichmentMatrix(DEresults = kmerDE, enzyme_source = "RNASEH1", constr = "R7", smallestUnit = 2)
+e <- enrichmentMatrix(DEresults = kmerDE, enzyme_source = "ECO_RNASEH", constr = "R7", smallestUnit = 2)
+v <- enrichmentMatrix(DEresults = kmerDE2, enzyme_source = "HIV", constr = "R7_filtered", smallestUnit = 2)
+h2 <- enrichmentMatrix(DEresults = kmerDE2, enzyme_source = "RNASEH1_05", constr = "R7_filtered", smallestUnit = 2)
+h3 <- enrichmentMatrix(DEresults = kmerDE2, enzyme_source = "RNASEH1_10", constr = "R7_filtered", smallestUnit = 2)
+h4 <- enrichmentMatrix(DEresults = kmerDE2, enzyme_source = "RNASEH1_60", constr = "R7_filtered", smallestUnit = 2)
+
+all_scores <- matrix(c(as.vector(h/max(h)), as.vector(e/max(e)), as.vector(v/max(v)), as.vector(h2/max(h2)), as.vector(h3/max(h3)), as.vector(h4/max(h4))), 
+                     nrow = 6, byrow = T)
+rownames(all_scores) <- c("Human", "E. coli", "HIV-1", "Human_5min", "Human_10min", "Human_60min")
+plot(hclust(dist(all_scores)))
+```
+
+### Effect of single nt substitutions on the cleavability
+```{r}
+plotMutationEffect(stringSet = heptamers, oneString = "GGCGCAA", FoldChanges = kmerDE2[["HIV"]][["R7_filtered"]][[7]][[3]][["logFC"]])
+plotMutationEffect(stringSet = heptamers, oneString = "GGTACAA", FoldChanges = kmerDE2[["HIV"]][["R7_filtered"]][[7]][[3]][["logFC"]])
+```

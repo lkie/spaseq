@@ -1,0 +1,17 @@
+# 1. Load spaseq
+
+library(spaseq)
+
+# 2. Read-in pre-calculated preference-scores:
+
+scores1 <- read.table(system.file("extdata", "RNASEH1_R4b_2nt_a.txt", package="spaseq")) #This scores I have used in the paper
+scores2 <- read.table(system.file("extdata", "RNASEH1_R4b_2nt_b.txt", package="spaseq")) # Scores from the second sequencing (5 min digestion)
+scores3 <- read.table(system.file("extdata", "RNASEH1_R4b_2nt_c.txt", package="spaseq")) # Scores from the second sequencing (10 min digestion)
+scores4 <- read.table(system.file("extdata", "RNASEH1_R4b_2nt_d.txt", package="spaseq")) # Scores from the second sequencing (60 min digestion)
+
+# 3. Score your sequence (with either scores) - nth value provides cleavability of a bond after nth nucleotide. 
+mySequence <- makeRandSeq(50)
+scoreSequence(mySequence, scores1[,8:15], 6)
+
+
+

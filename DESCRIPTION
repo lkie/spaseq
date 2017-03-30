@@ -1,0 +1,13 @@
+Package: spaseq
+Type: Package
+Title: R package for analysis of the RNase H Sequence Preference Assay results.
+Version: 1.0.0
+Date: 2017-03-28
+Author: Lukasz Kielpinski
+Maintainer: Lukasz Kielpinski <lukasz.kielpinski@roche.com>
+Description: Allows for reproducing figures from H-SPA paper as well as to analyze results of similar studies
+Imports:edgeR,ggplot2,grid,lattice,seqLogo
+License: GPL-3
+LazyData: TRUE
+RoxygenNote: 5.0.1
+biocViews: Sequence Preference Assay

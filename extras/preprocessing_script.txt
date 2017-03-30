@@ -1,0 +1,127 @@
+# Author: Łukasz Jan Kiełpiński
+# Date: 2016-12-02
+# License: GPL-3
+
+# WARNING: This is not a production-quality script, it is intended to  
+# illustrate the data pre-processing for the H-SPA publication, and as an 
+# inspiration for running similar analysis. NO WARRANTY WHATSOEVER. 
+
+# This script was used for pre-processing of the H-SPA sequencing data.
+# It uses as input the FASTQ files obtained from the sequencing facility, and outputs
+# summarized kmer counts in a directory tree directly readable by the spaseq R package.
+# It is intended to be run in the linux command-line environment, using standard tools 
+# plus a cutadapt utility (Martin 2011).
+# It is intended to be run with H-SPA constructs prepared with oligonucleotides R7, 
+# R4a and R4b (sequences below). If working with different sequences, you need to 
+# adapt the scripts. 
+# You always need to adapt the paths/filenames to the particular input/output that you 
+# work with and numbers of indexes. Different sequencing facilities will often give 
+# different structure of the output - you need to make sure you adapt the script to yours.
+
+# Sequences of the supported oligonucleotides:
+# R7	GTTCAGAGTTCTACAGTCCGACGATCNNNrNrNrNrNrNrNrNNNNCGATTGGCATCTGGGTAGNNNTGGAATTCTCGGGTGCCAAGG/36-FAM/ #insert 13
+# R4a	GTTCAGAGTTCTACAGTCCGACGATCNNNNmGmCmNmNrNrNrNrNmNmNmGmGCCTAGACCAAGCGTACTCNNNTGGAATTCTCGGGTGCCAAGG/36-FAM/ #insert 14
+# R4b	GTTCAGAGTTCTACAGTCCGACGATCNNNSmCmNmNmNmNmNmNrNrNrNrNmNmGCCTAGACCAAGCGTACTCMNKTGGAATTCTCGGGTGCCAAGG/36-FAM/ #insert 16
+
+##############################
+# Script:
+
+# Set the directory names:
+raw_data_dir="/data/seqdata/raw"
+proc_data_dir="/data/seqdata/processed"
+mkdir $proc_data_dir
+
+
+# Part I.
+# Remove fixed parts of the adapter, remove reads without perfect match to the illumina 
+# index (which has to be included in the header), remove inserts that do not match the
+# oligonucleotide design, and sort the inserts. Briefly: this part extracts variable 
+# inserts from each construct and write to file.
+
+for index in {1..14}
+do
+
+mkdir "$proc_data_dir"/$index
+cd "$proc_data_dir"/$index
+
+mfp=$(echo "$raw_data_dir"/*_"$index"/*001_R1_001.fastq.gz)
+local_index=$(awk -v filepath=$mfp 'BEGIN{print(filepath)}' | awk 'BEGIN{FS="_"}{print($6)}')
+
+zcat "$raw_data_dir"/*_"$index"/*.fastq.gz | 
+nice cutadapt -a CGATTGGCATCTGGGTAGNNNTGGAATTCTCGGGTGC -q 20 -m 13 -M 13 -e 0.12 - 2> cutadapt_R7.error | 
+paste - - - - | awk  -v local_index=$local_index '($2 ~ ":"local_index){print($3)}END{print(NR) > "count_after_cutadapt_R7.txt"}' | 
+grep '^[ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT]$' | 
+sort -S4G | awk '{print}END{print(NR) > "count_after_regex_R7.txt"}' | gzip > R7.txt.gz &
+
+zcat "$raw_data_dir"/*_"$index"/*.fastq.gz | 
+nice cutadapt -a GGCCTAGACCAAGCGTACTCNNNTGGAATTCTCGGG -q 20 -m 14 -M 14 -e 0.12 - 2> cutadapt_R4a.error | 
+paste - - - - | awk  -v local_index=$local_index '($2 ~ ":"local_index){print($3)}END{print(NR) > "count_after_cutadapt_R4a.txt"}' |
+grep '^[ACGT][ACGT][ACGT][ACGT][G][C][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT]$' | 
+sort -S4G | awk '{print}END{print(NR) > "count_after_regex_R4a.txt"}' | gzip > R4a.txt.gz &
+
+zcat "$raw_data_dir"/*_"$index"/*.fastq.gz | 
+nice cutadapt -a GCCTAGACCAAGCGTACTCNNNTGGAATTCTCGG -q 20 -m 16 -M 16 -e 0.12 - 2> cutadapt_R4b.error | 
+paste - - - - | awk  -v local_index=$local_index '($2 ~ ":"local_index){print($3)}END{print(NR) > "count_after_cutadapt_R4b.txt"}' | 
+grep '^[ACGT][ACGT][ACGT][CG][C][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT][ACGT]$' | 
+sort -S4G | awk '{print}END{print(NR) > "count_after_regex_R4b.txt"}' | gzip > R4b.txt.gz &
+
+wait
+
+done
+
+# Part II
+# Split the inserts into kmers of different lengths starting at different positions,
+# count occurrences of each species and write the summarized results to file. 
+
+
+#For R7:
+for index in {1..14}
+do
+  cd "$proc_data_dir"/$index
+  for kmer in {1..13}
+  do
+    mkdir "$proc_data_dir"/$index/$kmer
+    cd "$proc_data_dir"/$index/$kmer
+    for (( pos=1; pos<=$((14-$kmer)); pos++ ))
+      do
+        zcat ../R7.txt.gz | awk -v kmer=$kmer -v pos=$pos '($1 !~ /N/){print(substr($1, pos, kmer))}' | 
+        sort -S1G | uniq -c | gzip > $pos.R7.txt.gz &
+      done
+     wait
+    done
+done
+
+#For R4a:
+for index in {1..14}
+do
+  cd "$proc_data_dir"/$index
+  for kmer in {1..13}
+  do
+    mkdir "$proc_data_dir"/$index/$kmer
+    cd "$proc_data_dir"/$index/$kmer
+    for (( pos=1; pos<=$((15-$kmer)); pos++ ))
+      do
+        zcat ../R4a.txt.gz | awk -v kmer=$kmer -v pos=$pos '($1 !~ /N/){print(substr($1, pos, kmer))}' | 
+        sort -S1G | uniq -c | gzip > $pos.R4a.txt.gz &
+      done
+     wait
+    done
+done
+
+#For R4b:
+for index in {1..14}
+do
+  cd "$proc_data_dir"/$index
+  for kmer in {1..13}
+  do
+    mkdir "$proc_data_dir"/$index/$kmer
+    cd "$proc_data_dir"/$index/$kmer
+    for (( pos=1; pos<=$((17-$kmer)); pos++ ))
+      do
+        zcat ../R4b.txt.gz | awk -v kmer=$kmer -v pos=$pos '($1 !~ /N/){print(substr($1, pos, kmer))}' | 
+        sort -S1G | uniq -c | gzip > $pos.R4b.txt.gz &
+      done
+     wait
+    done
+done
+
