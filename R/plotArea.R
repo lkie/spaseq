@@ -11,6 +11,7 @@
 #' @param startPos From which position to plot
 #' @param endPos To which position to plot
 #' @param xlab X-axis label
+#' @param show_sequence Should RNA sequence be displayed on the plot?
 #' @param ... Further parameters to \code{\link{plot}}
 #' @return Plot
 #' @author Lukasz Jan Kielpinski
@@ -19,7 +20,7 @@
 
 #Function for plotting RNase H cleavage scores in the sequence (HIV-style)
 #CleavageScores OR hbp has to be provided:
-plotArea <- function(rnaSequence, CleavageScores, hbp, startPos, endPos, xlab = "Bond number", ...){
+plotArea <- function(rnaSequence, CleavageScores, hbp, startPos, endPos, xlab = "Bond number", show_sequence = TRUE, ...){
   if(missing(CleavageScores)){
     CleavageScores <- predictCleavages(rnaSequence, hbp)
     message("Calculating scores based on sequence and hbp provided")
@@ -31,8 +32,10 @@ plotArea <- function(rnaSequence, CleavageScores, hbp, startPos, endPos, xlab = 
        type = "h", ylab = expression(log[2]*(FC)), xlab = xlab, 
        las = 1, ylim = range(c(CleavageScores[startPos:endPos], 0), na.rm = T), ...)
   
-  toRNA <- unlist(strsplit(as.character(rnaSequence[startPos:endPos]), ""))
+  if(show_sequence){
+      toRNA <- unlist(strsplit(as.character(rnaSequence[startPos:endPos]), ""))
   toRNA[toRNA == "T"] <- "U"
   text(x = seq(startPos - 0.5, endPos - 0.5,1), y = 0, 
        labels = toRNA, pos = 1)
+  }
 }
