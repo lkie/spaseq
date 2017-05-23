@@ -16,6 +16,7 @@
 #' @return Plot
 #' @author Lukasz Jan Kielpinski
 #' @seealso \code{\link{predictCleavages}}
+#' @import Biostrings
 #' @export plotArea
 
 #Function for plotting RNase H cleavage scores in the sequence (HIV-style)
@@ -33,7 +34,7 @@ plotArea <- function(rnaSequence, CleavageScores, hbp, startPos, endPos, xlab = 
        las = 1, ylim = range(c(CleavageScores[startPos:endPos], 0), na.rm = T), ...)
   
   if(show_sequence){
-      toRNA <- unlist(strsplit(as.character(rnaSequence[startPos:endPos]), ""))
+      toRNA <- unlist(strsplit(as.character(DNAString(rnaSequence)[startPos:endPos]), ""))
   toRNA[toRNA == "T"] <- "U"
   text(x = seq(startPos - 0.5, endPos - 0.5,1), y = 0, 
        labels = toRNA, pos = 1)
