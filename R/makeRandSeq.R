@@ -9,8 +9,9 @@
 #' @export makeRandSeq
 
 makeRandSeq <- function(length, nts = c("A", "C", "G", "T"), prob = rep(0.25, 4), n = 1){
-  generated_sequences <- rep(NA, i)
+  generated_sequences <- rep(NA, n)
   for(i in 1:n){
     generated_sequences[i] <- paste(sample(x = nts, size = length, prob = prob, replace = T), collapse = "")
-    }
+  }
+  generated_sequences
 }
