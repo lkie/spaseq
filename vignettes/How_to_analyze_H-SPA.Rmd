@@ -336,7 +336,7 @@ plotArea(CleavageScores = hiv1_scores, rnaSequence = hiv1_genome, startPos = 904
 
 ##### Plot area of interest: Central part of Rev-response element (which is located at 7709 - 8063 nt)
 ```{r}
-plotArea(CleavageScores = hiv1_scores, rnaSequence = hiv1_genome, startPos = 7800, endPos = 7950)
+plotArea(CleavageScores = hiv1_scores, rnaSequence = hiv1_genome, startPos = 7800, endPos = 7950, show_sequence = FALSE)
 ```
 
 ##### Compare distribution of distances between well-cleaved sites (gaps) in HIV-1 genome with randomly sampled genomes:
